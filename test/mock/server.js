@@ -233,6 +233,7 @@ function createMock(options = {}) {
       response.end(reason);
     };
     if (profile.status) return fail(profile.status, "mock: host refuses");
+    if (profile.refuseSub && request.headers["x-bla-sub"]) return fail(403, "mock: refuses the script's own requests");
     // A host that allows only so many connections at once and refuses the rest (rate limiting).
     if (profile.limitConcurrent && counters.current >= profile.limitConcurrent) {
       counters.limited = (counters.limited || 0) + 1;

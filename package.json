@@ -1,6 +1,6 @@
 {
   "name": "bili-loon-accel",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "releaseDate": "2026-11-17",
   "private": true,
   "description": "B 站双端（国际版 + 国内版）Loon 加速插件，带实时遥测：多线程、多 CDN 预读（移植自 Bilibili-thread-ripper），插件运行情况实时写进你自己的私有 GitHub 仓库",

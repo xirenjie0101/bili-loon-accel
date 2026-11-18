@@ -1,5 +1,5 @@
 /*
- * BiliAccel · B 站双端加速（国际版 + 国内版）· 实时诊断版  —  2.0.0
+ * BiliAccel · B 站双端加速（国际版 + 国内版）· 实时诊断版  —  2.0.1
  *
  * 一个脚本，五个入口（由 Loon 插件按场景调用）：
  *   1. 媒体请求（request）：哔哩哔哩 App 取视频分段时，按“线程撕裂者”的办法向多个 CDN 节点并行要字节块，
@@ -15,7 +15,7 @@
  * 原因、App 类型（国际版 / 国内版）和版本号。不写 Cookie、账号、完整视频地址（签名、mid、buvid）、视频编号。
  * Generated file — edit src/ and run `node build.js` instead.
  */
-var BTRA_VERSION = "2.0.0";
+var BTRA_VERSION = "2.0.1";
 var BTRA_STORE_KEY = "bla_state_v1";
 var BTRA_CACHE_PREFIX = "bla_c:";
 var BTRA_STATUS_URL = "https://www.bilibili.com/__bla__/";
@@ -63,7 +63,10 @@ var BTRA_EXACT_LIMIT = 2 * 1024 * 1024;
 var BTRA_OPEN_REPLY = 2 * 1024 * 1024;
 var BTRA_PIECE_TIMEOUT = 9000;
 var BTRA_HEDGE_BUDGET = 4;
-var BTRA_DEADLINE = 8000;
+// 2.0.1: measured on a real phone (Los Angeles), the App's own HTTP route gave 0.8–1.3 MB/s on one
+// connection while every mirror reached over HTTPS gave 2–70 KB/s, and waiting 8 s for them made the App
+// stall and re-ask. Whatever cannot be put together quickly goes back to the App's own route at once.
+var BTRA_DEADLINE = 2500;
 var BTRA_CACHE_TTL = 10 * 60000;
 var BTRA_BEHIND_KEEP = 512 * 1024;
 // Automatic connection count (upstream 0.9.4.0, adapted): the ladder, where it starts, how long
@@ -1138,7 +1141,8 @@ var BTRA_PAIR_TTL = 20 * 60000;
       "a{color:#4cc2ff}p{color:#97a0b0;font-size:13px}</style></head><body><h1>⚡ BiliAccel · B 站双端加速</h1><table>";
     for (var row = 0; row < rows.length; row += 1) html += "<tr><td>" + rows[row][0] + "</td><td>" + rows[row][1] + "</td></tr>";
     var diag = JSON.stringify({ ver: BTRA_VERSION, dev: queue.dev, cfg: configSummary(), tq: { okAt: queue.okAt, err: queue.err, pending: queue.ev.length, sent: queue.sent }, agg: aggregate(), sniffs: sniffs, runs: current.runs, recent: queue.ev.slice(-30) });
-    html += "</table><p>先在 B 站 App 里看一会儿视频，再回来刷新这个页面。<br><a href=\"?reset=1\">清零统计、缓存和保险丝</a></p>" +
+    html += "</table><p><a href=\"/__bla__/live\">▶ 开始实时诊断</a>（30 分钟内每分钟上报）<br><a href=\"/__bla__/speed\">▶ 网速体检</a>（约 1 分钟，页面会一直转圈，等它出结果；先在 App 里播放一会儿视频，用的是那个视频的地址）</p>" +
+      "<p>先在 B 站 App 里看一会儿视频，再回来刷新这个页面。<br><a href=\"?reset=1\">清零统计、缓存和保险丝</a></p>" +
       "<p>没开实时遥测时，把下面这段诊断复制下来发给 Claude：</p><textarea id=\"d\" readonly style=\"width:100%;height:120px;background:#161a22;color:#c9d1dc;border:1px solid #2a2f3a;font:11px ui-monospace,monospace\">" + escapeHtml(diag) + "</textarea>" +
       "<p><button onclick=\"var t=document.getElementById('d');t.select();document.execCommand('copy');this.textContent='已复制'\" style=\"font-size:15px;padding:8px 14px\">复制诊断</button></p></body></html>";
     finished = true;
@@ -1297,7 +1301,14 @@ var BTRA_PAIR_TTL = 20 * 60000;
     if (typeof setTimeout === "function") setTimeout(close, 25000);
   }
 
-  function startLive() {
+  function pageReply(title, lines, ok) {
+    return { response: { status: 200, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }, body:
+      "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + escapeHtml(title) + "</title>" +
+      "<style>body{margin:0;padding:20px;font:16px/1.7 -apple-system,'PingFang SC',sans-serif;background:#0e1014;color:#e9ecf2}p{color:#c9d1dc}a{color:#4cc2ff}</style></head><body>" +
+      "<h2>" + (ok ? "✅ " : "⚠️ ") + escapeHtml(title) + "</h2><p>" + escapeHtml(lines).replace(/ · /g, "<br>") + "</p><p><a href=\"" + BTRA_STATUS_URL + "\">回到统计页</a></p></body></html>" } };
+  }
+
+  function startLive(asPage) {
     finished = true;
     var queue = tqLoad();
     queue.liveUntil = Date.now() + 30 * 60000;
@@ -1312,7 +1323,7 @@ var BTRA_PAIR_TTL = 20 * 60000;
       var lines = ok ? "设备 " + queue.dev + " 已连上遥测仓库 " + config.repo + "。接下来 30 分钟每分钟上报一次；现在去 B 站 App 播放视频（国际版、国内版各看一会儿）。"
         : (note || "没送达") + "。" + (config.token ? "检查遥测令牌和仓库名。" : "在插件参数里填上遥测令牌。") + " 统计页：" + BTRA_STATUS_URL;
       try { $notification.post("BiliAccel 实时诊断" + (ok ? "已开始" : "没能开始"), ok ? "设备 " + queue.dev : "", lines); } catch (_error) {}
-      $done({ title: "BiliAccel 实时诊断", content: lines });
+      $done(asPage ? pageReply("BiliAccel 实时诊断" + (ok ? "已开始" : "没能开始"), lines, ok) : { title: "BiliAccel 实时诊断", content: lines });
     };
     if (!telemetryFlush("diag", true, reply)) return;
     if (typeof setTimeout === "function") setTimeout(function () { reply(false, "GitHub 没有及时回应"); }, 15000);
@@ -1327,16 +1338,16 @@ var BTRA_PAIR_TTL = 20 * 60000;
    *   C  16 connections over mainland + overseas mirrors, 512 KB each
    */
 
-  function speedTest() {
+  function speedTest(asPage) {
     finished = true;
-    var outcome = { ty: "spd" };
+    var outcome = { ty: "spd", via: asPage ? "page" : "generic" };
     var closed = false;
     var close = function (title, content) {
       if (closed) return;
       closed = true;
       tqPush(outcome);
       try { $notification.post(title, "", content); } catch (_error) {}
-      var after = function () { $done({ title: title, content: content }); };
+      var after = function () { $done(asPage ? pageReply(title, content, !outcome.err) : { title: title, content: content }); };
       if (!telemetryFlush("speed", true, after)) after();
       else if (typeof setTimeout === "function") setTimeout(after, 10000);
     };
@@ -1353,31 +1364,51 @@ var BTRA_PAIR_TTL = 20 * 60000;
 
     function run(address, agent) {
       var parts = /^(https?):\/\/([^/:?#]+)(?::\d+)?(\/[^?#]*)(\?[^#]*)?/i.exec(address);
+      var scheme = parts[1].toLowerCase();
       var origin = parts[2].toLowerCase();
       var path = parts[3];
       var query = (parts[4] || "").replace(/([?&])hdnts=[^&]*(&|$)/, function (_all, lead, tail) { return tail ? lead : ""; });
       outcome.host = origin;
+      outcome.sc = scheme;
       var headers = { "User-Agent": agent, Referer: "https://www.bilibili.com/", "X-BLA-Sub": "1", "Accept-Encoding": "identity" };
-      // Phase A: the App's own address, one connection, 512 KB from a point a little way into the file.
-      fetchRange(address, 1048576, 1048576 + 524287, headers, 15000, function (result) {
-        outcome.A = result;
-        var total = result.total || 0;
-        if (!total) { outcome.err = "原地址取不到：" + (result.err || "?"); }
-        var base = total ? Math.max(0, Math.min(Math.floor(total * 0.4), total - 9 * 1048576)) : 4 * 1048576;
-        var mainland = BTRA_MAINLAND.slice(0, 8);
-        parallel(mainland.map(function (host, index) { return { host: host, start: base + index * 524288 }; }), function (summaryB) {
-          outcome.B = summaryB;
-          var wide = BTRA_MAINLAND.concat(BTRA_OVERSEAS).slice(0, 16);
-          var baseC = base + 8 * 524288;
-          if (total) baseC = Math.min(baseC, Math.max(0, total - 16 * 524288));
-          parallel(wide.map(function (host, index) { return { host: host, start: baseC + index * 524288 }; }), function (summaryC) {
-            outcome.C = summaryC;
-            var a = outcome.A && outcome.A.kb || 0;
-            var aMax = outcome.A && outcome.A.kbMax || 0;
-            var line = "原地址单连接 " + (a ? a + " KB/s" : aMax ? "< " + aMax + " KB/s（没传完）" : "失败") + " · 8 路 " + (summaryB.kb || 0) + " KB/s" + (a ? "（×" + (summaryB.kb / a).toFixed(1) + "）" : "") +
-              " · 16 路 " + (summaryC.kb || 0) + " KB/s" + (a ? "（×" + (summaryC.kb / a).toFixed(1) + "）" : "");
-            outcome.line = line;
-            close("BiliAccel 网速体检", line + "。结果已上报。");
+      var MB = 1048576;
+      var mirror = function (host, useScheme) { return (useScheme || scheme) + "://" + host + path + query; };
+      // A: the App's own address, one connection, 1 MB a little way into the file.
+      fetchRange(address, MB, 2 * MB - 1, headers, 12000, function (single) {
+        outcome.A = single;
+        var total = single.total || 0;
+        if (!total) outcome.err = "原地址取不到：" + (single.err || "?");
+        var room = total ? Math.max(0, total - 12 * MB) : 4 * MB;
+        var base = total ? Math.min(Math.floor(total * 0.3), room) : 4 * MB;
+        // O: the same address over 4 connections at once (1 MB each) — more connections on the App's own route.
+        parallel([0, 1, 2, 3].map(function (index) { return { label: "origin", url: address, start: base + index * MB, bytes: MB }; }), function (four) {
+          outcome.O = four;
+          // H: overseas mirrors, the App's scheme
+          var overseas = BTRA_OVERSEAS.filter(function (host) { return host !== origin; });
+          var baseH = base + 4 * MB;
+          parallel(overseas.map(function (host, index) { return { label: host, url: mirror(host), start: baseH + index * 524288, bytes: 524288 }; }), function (overseasResult) {
+            outcome.H = overseasResult;
+            // M: mainland mirrors over the App's scheme; S: four of them over HTTPS (is TLS the slow part?)
+            var mainland = BTRA_MAINLAND.slice(0, 8);
+            var baseM = baseH + overseas.length * 524288;
+            parallel(mainland.map(function (host, index) { return { label: host, url: mirror(host), start: baseM + index * 262144, bytes: 262144 }; }), function (mainlandResult) {
+              outcome.M = mainlandResult;
+              var baseS = baseM + 8 * 262144;
+              parallel(["upos-sz-mirrorcosov.bilivideo.com", "upos-sz-mirroraliov.bilivideo.com", "upos-sz-mirrorali.bilivideo.com", "upos-sz-mirrorbos.bilivideo.com"].map(function (host, index) {
+                return { label: host + "/https", url: mirror(host, "https"), start: baseS + index * 262144, bytes: 262144 };
+              }), function (tlsResult) {
+                outcome.S = tlsResult;
+                var a = single.kb || 0;
+                var times = function (value) { return a && value ? "（×" + (value / a).toFixed(1) + "）" : ""; };
+                var line = "原地址 1 连接 " + (a ? a + " KB/s" : single.kbMax ? "< " + single.kbMax + " KB/s" : "失败") +
+                  " · 原地址 4 连接 " + (four.kb || 0) + " KB/s" + times(four.kb) +
+                  " · 海外镜像 " + overseasResult.ok + "/" + overseasResult.n + " 个通 " + (overseasResult.kb || 0) + " KB/s" +
+                  " · 大陆镜像（" + scheme.toUpperCase() + "）" + mainlandResult.ok + "/" + mainlandResult.n + " 个通 " + (mainlandResult.kb || 0) + " KB/s" +
+                  " · HTTPS 4 路 " + (tlsResult.kb || 0) + " KB/s";
+                outcome.line = line;
+                close("BiliAccel 网速体检", line + "。结果已上报。");
+              });
+            });
           });
         });
       });
@@ -1388,11 +1419,11 @@ var BTRA_PAIR_TTL = 20 * 60000;
         var bytes = 0;
         var per = [];
         var lastAt = startedAtLocal;
+        if (!left) { callback({ n: 0, ok: 0, b: 0, ms: 0, kb: 0, per: [] }); return; }
         list.forEach(function (item) {
-          var target = "https://" + item.host + path + query;
-          fetchRange(target, item.start, item.start + 524287, headers, 15000, function (result) {
+          fetchRange(item.url, item.start, item.start + item.bytes - 1, headers, 12000, function (result) {
             if (result.b) { bytes += result.b; lastAt = Date.now(); }
-            per.push([shortHost(item.host), result.kb || 0, result.err ? result.err.slice(0, 16) : ""]);
+            per.push([shortHost(item.label), result.kb || 0, result.err ? result.err.slice(0, 16) : ""]);
             left -= 1;
             if (!left) {
               per.sort(function (x, y) { return y[1] - x[1]; });
@@ -1446,6 +1477,9 @@ var BTRA_PAIR_TTL = 20 * 60000;
     // scheduled / manual run without any request (told apart by the tag Loon gives the script).
     if (typeof $response !== "undefined" && $response && typeof $request !== "undefined" && $request) { sniffResponse(); return; }
     if (!url) { job(); return; }
+    // Safari entry points for the manual runs (Loon's generic scripts are hard to find on the phone).
+    if (/^https?:\/\/(?:www|m)\.bilibili\.com\/__bla__\/speed/i.test(url)) { state = loadState(); speedTest(true); return; }
+    if (/^https?:\/\/(?:www|m)\.bilibili\.com\/__bla__\/live/i.test(url)) { state = loadState(); startLive(true); return; }
     if (/^https?:\/\/(?:www|m)\.bilibili\.com\/(?:__bla__|__btr_app__)(?:[/?#]|$)/i.test(url)) { statusPage(); return; }
     media();
   }
@@ -1619,8 +1653,15 @@ var BTRA_PAIR_TTL = 20 * 60000;
     // Akamai nodes travel different routes, and using them together is what adds up to real
     // bandwidth. The CDN setting only decides which set is tried first; measured speed then sorts
     // out who actually carries the load. A mirror resting after repeated hard failures is skipped.
+    // 2.0.1: the App's own host comes first — the same route it would use, only with several
+    // connections — then the overseas mirrors, then the mainland ones (left to prove themselves).
+    // Sub-requests use the App's scheme: on the phone that reported, plain HTTP was some 50 times
+    // faster than HTTPS to the very same host. Akamai hosts take their own token only, so another
+    // Akamai host is never asked for a file it was not given.
     var preferred = config.overseas ? BTRA_OVERSEAS : BTRA_MAINLAND;
-    var everyMirror = preferred.concat(BTRA_MAINLAND, BTRA_OVERSEAS).filter(function (host, index, all) { return all.indexOf(host) === index; });
+    var everyMirror = [originHost].concat(preferred, BTRA_MAINLAND, BTRA_OVERSEAS).filter(function (host, index, all) {
+      return all.indexOf(host) === index && (host === originHost || !/\.akamaized\.net$/i.test(host));
+    });
     // Left out for this file: a mirror that serves other files but has refused this one (twice,
     // lately — upstream: "只停用这一个组合，不会把整个节点停掉"); within one run a single refusal will do.
     var refusedHere = {};
@@ -1651,9 +1692,14 @@ var BTRA_PAIR_TTL = 20 * 60000;
     var triesOf = function (host) { var record = state.hosts[host]; return record ? (record.ok || 0) + (record.bad || 0) + (record.late || 0) : 0; };
     var measuredAt = function (host) { var record = state.hosts[host]; return record && record.at || 0; };
     var knownHosts = pool.filter(function (host) { return speedOf(host) > 0; }).sort(function (a, b) { return speedOf(b) - speedOf(a); });
-    var unknownHosts = pool.filter(function (host) { return speedOf(host) <= 0; }).sort(function (a, b) { return triesOf(a) - triesOf(b); });
+    var unknownHosts = pool.filter(function (host) { return speedOf(host) <= 0; }).sort(function (a, b) {
+      return (a === originHost ? -1 : 0) - (b === originHost ? -1 : 0) || triesOf(a) - triesOf(b);
+    });
     var assumedBps = knownHosts.length ? speedOf(knownHosts[Math.floor(knownHosts.length / 2)]) : BTRA_ASSUMED_BPS;
-    var fresh = knownHosts.length < 3;
+    // Nothing much known yet: even shares, the App's bytes asked of two hosts at once. 2.0.1: once the
+    // App's own host has a measured speed, that is enough to plan on — mirrors that never deliver stay
+    // unmeasured for good on some networks, and must not keep every batch in this cautious mode.
+    var fresh = knownHosts.length < (knownHosts.indexOf(originHost) >= 0 ? 1 : 3);
     // Upstream 0.9.3.0: a mirror measured at under a twelfth of the fastest sits out — whatever it
     // starts has to be rescued anyway, and its connection is better spent on a quick mirror. Once its
     // measurement is BTRA_MEASURE_TTL old it counts as unmeasured again and gets a probe. (Only
@@ -1688,9 +1734,16 @@ var BTRA_PAIR_TTL = 20 * 60000;
       // of two mirrors at once (see duplicateMust) so that a dead one costs nothing but bandwidth.
       // Half the connections, then, so that the doubled requests still fit into one round.
       var order = knownHosts.concat(unknownHosts);
+      // 2.0.1: the App's own host gets several connections and is assumed to be at least middling: the
+      // App's bytes go there first, so a batch is never worse than the App's own route. The others
+      // get one connection each and prove themselves on read-ahead.
+      var originSlots = order.indexOf(originHost) >= 0 ? Math.min(4, BTRA_PER_HOST) : 0;
+      for (var os = 0; os < originSlots; os += 1) slots.push({ host: originHost, bps: Math.max(speedOf(originHost), 200), explore: false });
       for (var s = 0; slots.length < Math.max(2, Math.floor(config.conns / 2)) && order.length; s += 1) {
         var candidate = order[s % order.length];
+        if (candidate === originHost) { if (s >= order.length) break; continue; }
         slots.push({ host: candidate, bps: speedOf(candidate) || assumedBps, explore: false });
+        if (s >= order.length * 2) break;
       }
     } else {
       // Bandwidth is the sum over mirrors, so first give one connection to EVERY mirror we trust
@@ -1897,6 +1950,10 @@ var BTRA_PAIR_TTL = 20 * 60000;
     }
     var usable = slots.filter(function (slot) { return !slot.explore && slotBytes(slot) > 0; });
     if (!usable.length) usable = slots.filter(function (slot) { return !slot.explore; });
+    // The App's bytes go to the App's own host and to measured hosts; unproven ones get read-ahead only.
+    var trusted = function (slot) { return slot.host === originHost || speedOf(slot.host) > 0; };
+    var mustSlots = usable.filter(trusted);
+    if (!mustSlots.length) mustSlots = usable;
     // The baseline: now and then the furthest read-ahead piece goes to the App's own address over a
     // single connection — what the App would get on its own. Its bytes are as good as any (same file).
     var controlPiece = null;
@@ -1915,7 +1972,7 @@ var BTRA_PAIR_TTL = 20 * 60000;
       for (var si = 0; si < slots.length; si += 1) {
         var slice = slotBytes(slots[si]);
         if (!slice) continue;
-        var range = slots[si].explore ? null : take(mustQueue, slice);
+        var range = slots[si].explore || mustSlots.indexOf(slots[si]) < 0 ? null : take(mustQueue, slice);
         if (range) { addPiece(range, false, slots[si]); continue; }
         if (batchBytes >= BTRA_MAX_BATCH) break;
         range = take(extraQueue, Math.max(BTRA_MIN_SLOT, Math.min(Math.round(slice * BTRA_EXTRA_SHARE), BTRA_MAX_BATCH - batchBytes)));
@@ -1923,17 +1980,17 @@ var BTRA_PAIR_TTL = 20 * 60000;
       }
     } else {
       var sumBps = 0;
-      for (var ub = 0; ub < usable.length; ub += 1) sumBps += usable[ub].bps;
-      for (var ws = 0; ws < usable.length && mustQueue.length; ws += 1) {
-        var share = Math.max(BTRA_MIN_SLOT, Math.min(BTRA_MAX_PIECE, Math.round(mustBytes * usable[ws].bps / sumBps)));
+      for (var ub = 0; ub < mustSlots.length; ub += 1) sumBps += mustSlots[ub].bps;
+      for (var ws = 0; ws < mustSlots.length && mustQueue.length; ws += 1) {
+        var share = Math.max(BTRA_MIN_SLOT, Math.min(BTRA_MAX_PIECE, Math.round(mustBytes * mustSlots[ws].bps / sumBps)));
         var part = take(mustQueue, share);
-        if (part) addPiece(part, false, usable[ws]);
+        if (part) addPiece(part, false, mustSlots[ws]);
       }
     }
     // Whatever is left of the App's bytes (a big request, a slow network): more rounds over the
     // fastest connections; those pieces queue up behind the first ones.
     for (var cycle = 0; mustQueue.length && cycle < 256; cycle += 1) {
-      var again = usable[cycle % Math.max(1, Math.min(usable.length, 8))];
+      var again = mustSlots[cycle % Math.max(1, Math.min(mustSlots.length, 8))];
       if (!again) break;
       var more = take(mustQueue, Math.max(BTRA_MIN_SLOT, slotBytes(again)));
       if (more) addPiece(more, false, again);
@@ -1957,6 +2014,7 @@ var BTRA_PAIR_TTL = 20 * 60000;
     var runHostBytes = {};
     var controlInfo = null;
     var originalUrl = scheme + "://" + originHost + (port ? ":" + port : "") + path + query;
+    var subScheme = scheme === "http" ? "http" : "https";
     function hostSummaryOfRun() {
       var list = [];
       for (var name in runHostBytes) list.push([shortHost(name), Math.round(runHostBytes[name] / 1024)]);
@@ -2010,7 +2068,7 @@ var BTRA_PAIR_TTL = 20 * 60000;
       ev.hs = hostSummaryOfRun();
       var key = "origin:" + originHost;
       change("streak", key, 1);
-      if ((state.streaks[key] || 0) >= 4) {
+      if ((state.streaks[key] || 0) >= 3) {
         change("breaker", key, { until: Date.now() + 5 * 60000, reason: "这类地址在镜像节点上取不到（" + reason + "）" });
         change("streak", key, null);
         notifyOnce("breaker-origin", 5 * 60000, "BiliAccel 暂时让路", originHost, "连续几次没能从镜像节点拿到数据（" + reason + "），先原样放行 5 分钟。");
@@ -2026,7 +2084,7 @@ var BTRA_PAIR_TTL = 20 * 60000;
       headers.Range = "bytes=" + piece.start + "-" + piece.end;
       var sentAt = Date.now();
       $httpClient.get({
-        url: piece.slot.control && host === originHost ? originalUrl : "https://" + host + path + mirrorQuery,
+        url: host === originHost ? originalUrl : subScheme + "://" + host + path + mirrorQuery,
         headers: headers,
         timeout: BTRA_PIECE_TIMEOUT,
         "binary-mode": true,
@@ -2222,10 +2280,9 @@ var BTRA_PAIR_TTL = 20 * 60000;
           if (piece.slot.control && host === originHost) {
             controlInfo = { b: data.length, done: 1, ms: ms, kb: Math.round(data.length / Math.max(1, ms) * 1000 / 1024) };
             change("ewma", "ctlBps", data.length / Math.max(1, ms));
-          } else {
-            change("host", host, true, Date.now(), ms > 0 ? data.length / ms : 0, data.length);
-            if (goodHosts.indexOf(host) < 0) goodHosts.push(host);
           }
+          change("host", host, true, Date.now(), ms > 0 ? data.length / ms : 0, data.length);
+          if (goodHosts.indexOf(host) < 0) goodHosts.push(host);
           learnTotal(range ? range.total : 0, response);
           if (finished) return;
           if (task.done) { pump(); return; }
@@ -2385,7 +2442,13 @@ var BTRA_PAIR_TTL = 20 * 60000;
     }
 
     if (typeof setTimeout === "function") {
-      setTimeout(function () { giveUp("超过 " + Math.round(BTRA_DEADLINE / 1000) + " 秒还没拼齐"); }, BTRA_DEADLINE);
+      // Never longer than the App's own route would take for the same bytes (when that is known): on a
+      // network where the App's own host is fast, a slow batch goes back to it quickly.
+      var ownBps = speedOf(originHost);
+      var ownRouteMs = ownBps > 0 ? mustBytes / ownBps + 400 : 5000;
+      var deadlineMs = Math.max(BTRA_DEADLINE, Math.min(8000, Math.round(ownRouteMs * 1.2)));
+      ev.dl = deadlineMs;
+      setTimeout(function () { giveUp("超过 " + (deadlineMs / 1000).toFixed(1) + " 秒还没拼齐"); }, deadlineMs);
       setTimeout(function () { hedge(true, false); }, Math.round(BTRA_SLICE_MS * 1.4));
       setTimeout(function () { hedge(true, true); }, Math.round(BTRA_SLICE_MS * 2.2));
       setTimeout(function () { hedge(true, true); }, Math.round(BTRA_SLICE_MS * 3.2));

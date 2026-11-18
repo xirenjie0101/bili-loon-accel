@@ -59,7 +59,7 @@ test("segment-style reading (bytes=a-b, ~1 MB at a time, as the real app does): 
   assert.ok(state.flags.storeTest.ok, "the store self-test passed");
   assert.ok(state.stats.batches < result.requests, `fewer batches than requests: ${state.stats.batches} for ${result.requests}`);
   assert.ok(Object.keys(mock.stats.hosts).filter((host) => mock.stats.hosts[host].bytes > 0).length >= 4, "several mirrors shared the work");
-  assert.ok((mock.stats.hosts[AKAMAI]?.requests || 0) <= 2, "the slow origin host only carried the occasional baseline sample");
+  assert.ok((mock.stats.hosts[AKAMAI]?.bytes || 0) < original.length * 0.2, `the slow origin host was tried but carried little: ${mock.stats.hosts[AKAMAI]?.bytes}`);
   assert.ok(mock.stats.maxConcurrent >= 8, `parallel connections: ${mock.stats.maxConcurrent}`);
   assert.equal(mock.stats.signatureFailures, 0);
   assert.equal(state.hosts["upos-sz-mirrorbd.bilivideo.com"]?.ok || 0, 0, "the mirror that never answers never got a chance to matter");
@@ -215,7 +215,8 @@ test("when every mirror crawls (a congested overseas link) they are summed, not 
     if (state.hosts[host].until > Date.now()) benched += 1;
     if ((state.hosts[host].ok || 0) > 0) carried += 1;
   }
-  assert.ok(late >= 1, "mirrors were indeed slow enough to be marked late");
+  // (2.0.1 puts the App's own bytes on the App's own host first, so fewer pieces wait on slow mirrors
+  // and late marks may not happen at all; the point stands either way: none is benched for it.)
   assert.equal(benched, 0, "but lateness alone benched none of them");
   assert.ok(carried >= 6, `their bandwidth was summed across many mirrors: ${carried} carried pieces`);
 });
@@ -290,7 +291,8 @@ test("mirrors that fail or lie are routed around; if nothing works the request p
   let state = loon.state();
   assert.ok(state.hosts["upos-sz-mirrorhw.bilivideo.com"]?.bad >= 1, JSON.stringify(state.hosts));
   assert.ok(state.hosts["upos-sz-mirror14b.bilivideo.com"]?.bad >= 1, "the refusing mirror was found out on a read-ahead piece");
-  assert.ok(state.hosts["upos-sz-mirrorhw.bilivideo.com"]?.until > Date.now() || state.hosts["upos-sz-mirrorbd.bilivideo.com"]?.until > Date.now(), `benched after two failures in a row: ${JSON.stringify(state.hosts)}`);
+  // (2.0.1: unproven mirrors only carry read-ahead, so they are tried less often; benching needs three in a row)
+  assert.ok(!(state.hosts["upos-sz-mirrorhw.bilivideo.com"]?.bps > 0), "the lying mirror never got a speed");
   assert.equal(loon.log.passedThrough, 0, "three bad mirrors out of eight are not a reason to give up");
   // now every mirror refuses (as for content the mirrors do not carry). The whole pool has to be
   // covered — both the mainland and the overseas/Hong Kong nodes — or the script keeps finding a
@@ -305,8 +307,10 @@ test("mirrors that fail or lie are routed around; if nothing works the request p
     "cn-hk-eq-01-01.bilivideo.com", "cn-hk-eq-01-03.bilivideo.com", "cn-hk-eq-bcache-01.bilivideo.com"
   ];
   for (const host of Object.keys(state.hosts).concat(everyMirror)) {
-    mock.state.profiles[host] = { status: 403 };
+    if (host !== AKAMAI) mock.state.profiles[host] = { status: 403 };
   }
+  // 2.0.1: the App's own host is in the pool too; here it serves the App but not the script's copies.
+  mock.state.profiles[AKAMAI] = { ...mock.state.profiles[AKAMAI], refuseSub: true };
   loon.store.clear();
   const before = loon.log.passedThrough;
   const fallback = await ffmpegLikePlayer({ proxyPort, url, stopAfterBytes: 150000 });
@@ -319,6 +323,8 @@ test("mirrors that fail or lie are routed around; if nothing works the request p
   for (let index = 0; index < 3; index += 1) await ffmpegLikePlayer({ proxyPort, url, from: 1000 + index, stopAfterBytes: 1000 });
   state = loon.state();
   assert.ok(state.breaker[`origin:${AKAMAI}`].until > Date.now());
+  // (requests the earlier runs still had in flight land first: Loon would have killed them with the run)
+  await new Promise((resolve) => setTimeout(resolve, 2500));
   const requestsBefore = Object.values(mock.stats.hosts).reduce((sum, item) => sum + item.requests, 0);
   await ffmpegLikePlayer({ proxyPort, url, from: 5000, stopAfterBytes: 1000 });
   const requestsAfter = Object.values(mock.stats.hosts).reduce((sum, item) => sum + item.requests, 0);
@@ -409,7 +415,8 @@ test("automatic connection count: climbs while the App waits and more connection
   assert.ok(state.auto.lvl >= 4, `climbed from 16 to at least 32 connections: now ${LADDER[state.auto.lvl]} (${JSON.stringify(state.auto.log)})`);
   assert.ok(state.auto.log.every((step) => /App 等了|又要了一次/.test(step.m)), "every step up was because the App waited");
   const speedAt = (level) => { const list = state.autoS.filter((s) => s.l === level); return list.reduce((a, s) => a + s.b, 0) / Math.max(1, list.reduce((a, s) => a + s.ms, 0)); };
-  assert.ok(speedAt(state.auto.lvl) > speedAt(2) * 2, `batches got quicker with more connections: ${speedAt(2).toFixed(0)} → ${speedAt(state.auto.lvl).toFixed(0)} B/ms`);
+  // (2.0.1: the App's own host carries a fixed share at every level, so the gain is a little under 2×)
+  assert.ok(speedAt(state.auto.lvl) > speedAt(2) * 1.6, `batches got quicker with more connections: ${speedAt(2).toFixed(0)} → ${speedAt(state.auto.lvl).toFixed(0)} B/ms`);
   assert.ok(mock.stats.maxConcurrent > 16, `more than 16 connections at once in the end: ${mock.stats.maxConcurrent}`);
 });
 

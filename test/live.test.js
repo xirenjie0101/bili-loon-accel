@@ -258,19 +258,52 @@ test("self-test pages: the https and http media rules answer on the phone and re
   assert.deepEqual(rules, ["https", "http"], "both visits are already in the repository");
 });
 
-test("网速体检: one connection to the App's address vs 8 and 16 mirror connections, reported", async () => {
+test("网速体检: the App's address on 1 and 4 connections vs overseas / mainland mirrors (its scheme) vs HTTPS, reported", async () => {
   await freshLoon();
   // the App played something a moment ago
-  await ffmpegLikePlayer({ proxyPort, url: mock.mediaUrl(AKAMAI, 1001, "v720", "iphone_i"), stopAfterBytes: 600000 });
+  await ffmpegLikePlayer({ proxyPort, url: mock.mediaUrl(AKAMAI, 1001, "v720", "iphone_i").replace(/^https:/, "http:"), stopAfterBytes: 600000 });
   const result = await run({ request: undefined, scriptName: "BiliAccel 网速体检", timeoutMs: 120000 });
-  assert.match(result.content, /原地址单连接 \d+ KB\/s · 8 路 \d+ KB\/s（×[\d.]+） · 16 路 \d+ KB\/s/);
+  assert.match(result.content, /原地址 1 连接 (?:\d+|< \d+) KB\/s · 原地址 4 连接 \d+ KB\/s/);
+  assert.match(result.content, /海外镜像 \d+\/\d+ 个通 \d+ KB\/s · 大陆镜像（HTTP）\d+\/8 个通 \d+ KB\/s · HTTPS 4 路 \d+ KB\/s/);
   const speed = allEvents().find((event) => event.ty === "spd");
   assert.equal(speed.src, "app:intl");
   assert.equal(speed.host, AKAMAI);
-  assert.ok(speed.A.kb > 20 && speed.A.kb < 80, `the App's own route ≈ 40 KB/s: ${speed.A.kb}`);
-  assert.ok(speed.B.kb > speed.A.kb * 3, `8 mirrors well ahead: ${speed.B.kb} vs ${speed.A.kb}`);
-  assert.ok(speed.B.per.some((row) => row[2]), "the dead / refusing mirrors show up with their error");
-  assert.equal(speed.C.n, 16);
+  assert.equal(speed.sc, "http");
+  assert.ok(speed.O.kb > (speed.A.kb || speed.A.kbMax) * 2.5, `4 connections to the App's own host ≈ 4× one: ${speed.O.kb} vs ${speed.A.kb || speed.A.kbMax}`);
+  assert.ok(speed.M.kb > 200, `8 mainland mirrors add up: ${speed.M.kb}`);
+  assert.ok(speed.M.per.some((row) => row[2]), "the dead / refusing mirrors show up with their error");
+  assert.equal(speed.S.n, 4);
+  // the same test from Safari: /__bla__/speed answers with a page
+  const page = await run({ request: { url: "https://www.bilibili.com/__bla__/speed", method: "GET", headers: {} }, timeoutMs: 120000 });
+  assert.equal(page.response.status, 200);
+  assert.match(page.response.body, /网速体检/);
+  const live = await run({ request: { url: "https://www.bilibili.com/__bla__/live", method: "GET", headers: {} } });
+  assert.match(live.response.body, /实时诊断已开始/);
+});
+
+test("the network measured on 2026-11-17: App's own HTTP host fast, every mirror crawls — its host carries the load, the App never waits long", async () => {
+  await freshLoon();
+  mock.state.profiles = {
+    [AKAMAI]: { latency: 30, rate: 700 * 1024 },
+    "*ov.bilivideo.com": { latency: 300, rate: 15 * 1024 },
+    "cn-hk-eq-*": { latency: 300, rate: 3 * 1024 },
+    "*": { latency: 400, rate: 6 * 1024 }
+  };
+  const original = media("v720.m4s");
+  const url = mock.mediaUrl(AKAMAI, 1001, "v720", "iphone").replace(/^https:/, "http:");
+  const result = await segmentPlayer({ proxyPort, url, size: original.length, segment: 1048576, stopAfterBytes: 10 * 1048576 });
+  assert.equal(Buffer.compare(result.bytes, original.subarray(0, 10 * 1048576)), 0, "every byte in place");
+  const rate = result.bytes.length / result.seconds / 1024;
+  assert.ok(rate > 700 * 1.5, `more than the App's single connection (700 KB/s): ${rate.toFixed(0)} KB/s`);
+  await cron();
+  await cron();
+  const events = allEvents().filter((event) => event.ty === "m");
+  const slowest = Math.max(...events.map((event) => event.ms || 0));
+  assert.ok(slowest < 3500, `the App never waited long for one answer: ${slowest} ms`);
+  assert.ok((mock.stats.hosts[AKAMAI]?.bytes || 0) > result.bytes.length * 0.6, "the App's own host carried most of it");
+  assert.ok(events.every((event) => event.sc === "http"), "the App asked over HTTP");
+  const mirrorRequests = Object.entries(mock.stats.hosts).filter(([host]) => host !== AKAMAI).reduce((sum, [, item]) => sum + item.requests, 0);
+  assert.ok(mirrorRequests < events.length * 6, `the crawling mirrors were only probed: ${mirrorRequests} requests`);
 });
 
 test("the plugin file: new script syntax, every entry point, and the rules reach what they must", async () => {
