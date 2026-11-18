@@ -1,0 +1,46 @@
+#!name = BiliAccel · B站双端加速（实时诊断版）
+#!desc = 哔哩哔哩国际版（白色图标）和国内版取视频时多线程、多 CDN 并发预读（移植自线程撕裂者 BTR）。只读侦察 App 拿到的播放地址；填上自己的 GitHub 令牌后，运行情况每分钟写进你的私有仓库，能实时看到到底有没有加速。出错自动原样放行。统计页：Safari 打开 https://www.bilibili.com/__bla__/ 。非官方。
+#!author = xirenjie0101
+#!homepage = __BLA_HOMEPAGE__
+#!icon = __BLA_ICON_URL__
+#!openUrl = https://www.bilibili.com/__bla__/
+#!tag = 哔哩哔哩, 视频加速, 诊断
+#!system = iOS, iPadOS
+#!loon_version = 3.5.1(983)
+#!date = __BLA_DATE__
+#!version = __BLA_VERSION__
+
+[Argument]
+mode = select,"加速","只观察（对照）",tag=工作模式,desc=只观察：所有视频请求原样放行，但照样计时、上报，用来和加速时对比
+conns = select,"自动","16","32","48","8",tag=并发连接数,desc=自动（推荐）：16 条起步，App 等得久就加一档，加了没变快就退回，节点限流就退一档
+ahead = select,"4MB","2MB","8MB","关闭",tag=预读大小,desc=App 要一小段时顺便多取多少放进缓存；关闭则只取 App 要的那一段
+cache = select,"16MB","8MB","32MB","关闭",tag=缓存上限,desc=预读数据最多占多少存储；Loon 不稳定就调小
+cdn = select,"大陆CDN","海外CDN",tag=CDN 优先,desc=海外看冷门视频选大陆 CDN；两边的节点都会用，这里只决定先试哪边
+openEnded = select,"分块答复","原样放行",tag=大范围取流请求,desc=开着插件 App 放不了视频时改成原样放行
+sniff = switch,true,tag=侦察播放地址,desc=只读：记录 App 拿到的播放地址指向哪些 CDN（不改任何内容）
+token = input,"",tag=遥测令牌（GitHub）,desc=只对遥测仓库有 Contents 读写权限的 fine-grained token；留空则不上报
+repo = input,"__BLA_TELEMETRY_REPO__",tag=遥测仓库,desc=owner/repo，建议用私有仓库
+notify = switch,true,tag=通知,desc=开始加速、保险丝跳闸、诊断结果各提醒一次
+
+[Rule]
+# MITM 只看得到 TCP 上的请求：不让视频 CDN 和播放地址接口走 QUIC，App 会自动退回 HTTPS。
+# 注意 Loon 的本地规则优先于插件规则：如果你的配置里更早的规则已经匹配了这些域名，把下面几行复制到本地规则最前面。
+AND,((DOMAIN-SUFFIX,bilivideo.com),(PROTOCOL,QUIC)),REJECT
+AND,((DOMAIN-SUFFIX,bilivideo.cn),(PROTOCOL,QUIC)),REJECT
+AND,((DOMAIN-SUFFIX,bilivideo.net),(PROTOCOL,QUIC)),REJECT
+AND,((DOMAIN-SUFFIX,akamaized.net),(PROTOCOL,QUIC)),REJECT
+AND,((DOMAIN-SUFFIX,szbdyd.com),(PROTOCOL,QUIC)),REJECT
+AND,((DOMAIN-SUFFIX,biliapi.net),(PROTOCOL,QUIC)),REJECT
+AND,((DOMAIN-SUFFIX,biliapi.com),(PROTOCOL,QUIC)),REJECT
+AND,((DOMAIN-SUFFIX,bilibili.com),(PROTOCOL,QUIC)),REJECT
+
+[Script]
+request if ${url} ~= /^https?:\/\/(?:(?:[a-z0-9-]+\.)*(?:bilivideo\.(?:com|cn|net)|szbdyd\.com|xycdn\.com|mountaintoys\.cn|nexusedgeio\.com|ahdohpiechei\.com)|upos-[a-z0-9-]+\.akamaized\.net|[^\/?#]+(?=\/(?:upgcxcode|v1\/resource)\/))(?::\d+)?\/[^?#]*\.(?:m4s|mp4|flv)(?:[?#]|$)/i then script("__BLA_SCRIPT_URL__", {${mode}, ${conns}, ${ahead}, ${cache}, ${cdn}, ${openEnded}, ${sniff}, ${token}, ${repo}, ${notify}}) with tag="BiliAccel 媒体加速", timeout=30, binary_body_mode=true
+request if ${url} ~= /^https?:\/\/(?:www|m)\.bilibili\.com\/__bla__/i then script("__BLA_SCRIPT_URL__", {${mode}, ${conns}, ${ahead}, ${cache}, ${cdn}, ${openEnded}, ${sniff}, ${token}, ${repo}, ${notify}}) with tag="BiliAccel 统计页", timeout=10
+response if ${url} ~= /^https?:\/\/[^\/]+\/(?:bilibili\.(?:app\.playurl\.v1\.PlayURL|app\.playerunite\.v1\.Player|pgc\.gateway\.player\.v2\.PlayURL)\/|x\/(?:v2\/playurl|player\/(?:wbi\/)?playurl)|pgc\/player\/(?:api|web)\/playurl)/i then script("__BLA_SCRIPT_URL__", {${mode}, ${conns}, ${ahead}, ${cache}, ${cdn}, ${openEnded}, ${sniff}, ${token}, ${repo}, ${notify}}) with tag="BiliAccel 播放地址侦察", timeout=10, requires_body=true, binary_body_mode=true
+cron "* * * * *" then script("__BLA_SCRIPT_URL__", {${mode}, ${conns}, ${ahead}, ${cache}, ${cdn}, ${openEnded}, ${sniff}, ${token}, ${repo}, ${notify}}) with tag="BiliAccel 定时上报", timeout=30
+generic then script("__BLA_SCRIPT_URL__", {${mode}, ${conns}, ${ahead}, ${cache}, ${cdn}, ${openEnded}, ${sniff}, ${token}, ${repo}, ${notify}}) with tag="BiliAccel 开始实时诊断", timeout=30
+generic then script("__BLA_SCRIPT_URL__", {${mode}, ${conns}, ${ahead}, ${cache}, ${cdn}, ${openEnded}, ${sniff}, ${token}, ${repo}, ${notify}}) with tag="BiliAccel 网速体检", timeout=120
+
+[Mitm]
+hostname = *.bilivideo.com, *.bilivideo.cn, *.bilivideo.net, upos-hz-mirrorakam.akamaized.net, upos-sz-mirrorakam.akamaized.net, upos-bstar1-mirrorakam.akamaized.net, upos-bstar-mirrorakam.akamaized.net, *.szbdyd.com, *.xycdn.com, *.mountaintoys.cn, *.nexusedgeio.com, *.ahdohpiechei.com, www.bilibili.com, m.bilibili.com, app.bilibili.com, api.bilibili.com, grpc.biliapi.net, app.biliapi.net, api.biliapi.net, app.biliapi.com, api.biliapi.com
